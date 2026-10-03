@@ -27,7 +27,8 @@ export async function GET(request: NextRequest) {
   const code = request.nextUrl.searchParams.get('code');
 
   if (!code) {
-    return NextResponse.json({ error: 'No authorization code provided' }, { status: 400 });
+    // Cancelled, or Instagram refused the sign-in (for example, the account is not a tester yet).
+    return NextResponse.redirect(new URL('/request-access?from=instagram', request.url));
   }
 
   try {
@@ -84,9 +85,6 @@ export async function GET(request: NextRequest) {
   } catch (error) {
     const e = error as { response?: { data?: unknown }; message?: string };
     console.error('OAuth error:', e.response?.data || e.message);
-    return NextResponse.json(
-      { error: 'Authentication failed', detail: e.message },
-      { status: 500 }
-    );
+    return NextResponse.redirect(new URL('/request-access?from=instagram', request.url));
   }
 }

@@ -430,6 +430,14 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ e
             <SignInButtons />
           )}
         </div>
+        {!signedIn && (
+          <p className="mt-4 text-sm text-slate-400">
+            Instagram needs tester approval for now.{' '}
+            <Link href="/request-access" className="font-semibold text-pink-300 underline">
+              Request access
+            </Link>
+          </p>
+        )}
       </section>
 
       {/* Footer */}

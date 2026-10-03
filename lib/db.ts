@@ -137,6 +137,15 @@ CREATE TABLE IF NOT EXISTS li_posts (
 );
 CREATE INDEX IF NOT EXISTS idx_li_posts_user ON li_posts(instagram_user_id);
 CREATE INDEX IF NOT EXISTS idx_li_posts_due ON li_posts(status, scheduled_time);
+
+CREATE TABLE IF NOT EXISTS tester_requests (
+  id SERIAL PRIMARY KEY,
+  instagram_username TEXT,
+  contact_email TEXT,
+  screenshot BYTEA,
+  screenshot_type TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
 `;
 
 /** Creates the tables on first use, so no manual migration is needed. */
@@ -474,4 +483,52 @@ export async function mergeUserInto(oldId: string, newId: string): Promise<void>
   }
   await pool.query('UPDATE li_posts SET instagram_user_id = $2 WHERE instagram_user_id = $1', [oldId, newId]);
   await pool.query('DELETE FROM ig_users WHERE instagram_user_id = $1', [oldId]);
+}
+
+/* ---------- Instagram tester access requests ---------- */
+
+export interface TesterRequestRow {
+  id: number;
+  instagram_username: string | null;
+  contact_email: string | null;
+  screenshot_type: string | null;
+  has_screenshot: boolean;
+  created_at: Date;
+}
+
+export async function insertTesterRequest(
+  username: string | null,
+  contactEmail: string | null,
+  screenshot: Buffer | null,
+  screenshotType: string | null
+): Promise<number> {
+  await ensureSchema();
+  const { rows } = await getPool().query<{ id: number }>(
+    `INSERT INTO tester_requests (instagram_username, contact_email, screenshot, screenshot_type)
+     VALUES ($1, $2, $3, $4) RETURNING id`,
+    [username, contactEmail, screenshot, screenshotType]
+  );
+  return rows[0].id;
+}
+
+export async function listTesterRequests(): Promise<TesterRequestRow[]> {
+  await ensureSchema();
+  const { rows } = await getPool().query<TesterRequestRow>(
+    `SELECT id, instagram_username, contact_email, screenshot_type,
+            (screenshot IS NOT NULL) AS has_screenshot, created_at
+     FROM tester_requests ORDER BY created_at DESC LIMIT 200`
+  );
+  return rows;
+}
+
+export async function getTesterScreenshot(
+  id: number
+): Promise<{ data: Buffer; type: string } | null> {
+  await ensureSchema();
+  const { rows } = await getPool().query<{ screenshot: Buffer | null; screenshot_type: string | null }>(
+    'SELECT screenshot, screenshot_type FROM tester_requests WHERE id = $1',
+    [id]
+  );
+  const r = rows[0];
+  return r?.screenshot ? { data: r.screenshot, type: r.screenshot_type || 'image/png' } : null;
 }

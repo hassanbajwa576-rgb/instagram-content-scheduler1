@@ -62,7 +62,7 @@ const STEPS = [
 const FAQ = [
   {
     q: 'Do I need to be added or approved before I can use it?',
-    a: 'No. Anyone can sign in with LinkedIn and start scheduling straight away. Instagram works for professional (Business or Creator) accounts once you authorise the app.',
+    a: 'LinkedIn: no, anyone can sign in and start straight away. Instagram: while our Instagram connection is in testing, your account must be added as a tester first. Send us your username or a profile screenshot on the request page and we will add you, usually within a day.',
   },
   {
     q: 'Which Instagram accounts work?',
@@ -209,7 +209,7 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ e
         <div className="max-w-6xl mx-auto px-4 py-20 md:py-28 grid md:grid-cols-2 gap-14 items-center">
           <div>
             <p className="inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/5 px-3 py-1 text-xs text-slate-300 mb-6">
-              <span className="w-2 h-2 rounded-full bg-emerald-400" /> Free to use · No approval needed to start
+              <span className="w-2 h-2 rounded-full bg-emerald-400" /> Free to use · LinkedIn starts instantly · Instagram needs tester approval
             </p>
             <h1 className="text-4xl md:text-6xl font-bold leading-[1.05] tracking-tight">
               One scheduler for <span className="text-[#5aa9f0]">LinkedIn</span> and{' '}
@@ -235,6 +235,12 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ e
             </div>
             <p className="mt-4 text-xs text-slate-400">
               We use each network’s official sign-in and never see your password.
+            </p>
+            <p className="mt-2 text-sm text-slate-300">
+              New to Instagram here?{' '}
+              <Link href="/request-access" className="font-semibold text-pink-300 underline">
+                Request Instagram tester access
+              </Link>
             </p>
           </div>
           <MockQueue />
@@ -332,6 +338,7 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ e
               <li>✓ Tokens refreshed automatically so scheduling keeps working</li>
               <li>✓ Every post needs a photo or video link</li>
               <li>✓ Switch to a professional account free in Instagram settings</li>
+              <li>✓ Tester approval needed for now: <Link href="/request-access" className="underline">request access</Link></li>
             </ul>
             <div className="mt-6">
               <a href="/api/auth/login" className="inline-flex items-center gap-2 rounded-lg bg-gradient-to-r from-fuchsia-600 to-orange-500 hover:opacity-90 px-4 py-2.5 text-sm font-semibold">

@@ -1,59 +1,91 @@
 import { NextRequest, NextResponse } from 'next/server';
 import axios from 'axios';
+import { mergeUserInto, upsertUser } from '@/lib/db';
+import { exchangeForLongLivedToken } from '@/lib/instagram';
+import {
+  createSessionValue,
+  getSessionUserId,
+  SESSION_COOKIE,
+  SESSION_MAX_AGE,
+  USERNAME_COOKIE,
+} from '@/lib/session';
+
+export const dynamic = 'force-dynamic';
+
+/** Instagram user ids are ~17 digits, which exceeds JS number precision, so read them as text. */
+function extractId(raw: string, key: string): string | null {
+  const m = raw.match(new RegExp(`"${key}"\\s*:\\s*"?(\\d+)"?`));
+  return m ? m[1] : null;
+}
+
+function extractString(raw: string, key: string): string | null {
+  const m = raw.match(new RegExp(`"${key}"\\s*:\\s*"([^"]*)"`));
+  return m ? m[1] : null;
+}
 
 export async function GET(request: NextRequest) {
-  const searchParams = request.nextUrl.searchParams;
-  const code = searchParams.get('code');
-  const state = searchParams.get('state');
+  const code = request.nextUrl.searchParams.get('code');
 
   if (!code) {
-    return NextResponse.json(
-      { error: 'No authorization code provided' },
-      { status: 400 }
-    );
+    return NextResponse.json({ error: 'No authorization code provided' }, { status: 400 });
   }
 
   try {
-    // Exchange code for access token
-    const tokenResponse = await axios.post(
-      'https://graph.instagram.com/v18.0/oauth/access_token',
-      {
-        client_id: process.env.META_APP_ID,
-        client_secret: process.env.META_APP_SECRET,
+    // 1. Exchange the code for a short-lived token (form-encoded, per Instagram's API).
+    const tokenRes = await axios.post(
+      'https://api.instagram.com/oauth/access_token',
+      new URLSearchParams({
+        client_id: process.env.META_APP_ID || '',
+        client_secret: process.env.META_APP_SECRET || '',
         grant_type: 'authorization_code',
-        redirect_uri: process.env.META_REDIRECT_URI,
-        code,
-      }
+        redirect_uri: process.env.META_REDIRECT_URI || '',
+        code: code.replace(/#_$/, ''),
+      }),
+      { responseType: 'text', transformResponse: (d) => d }
     );
+    const tokenRaw = String(tokenRes.data);
+    const shortToken = extractString(tokenRaw, 'access_token');
+    if (!shortToken) throw new Error('Instagram did not return an access token.');
 
-    const { access_token, user_id } = tokenResponse.data;
+    // 2. Upgrade to a 60-day token so scheduled posts keep working.
+    const { token, expiresAt } = await exchangeForLongLivedToken(shortToken);
 
-    // Get user info
-    const userResponse = await axios.get(
-      `https://graph.instagram.com/v18.0/${user_id}?fields=id,username,name&access_token=${access_token}`
-    );
+    // 3. Look up the professional account id + username.
+    const meRes = await axios.get('https://graph.instagram.com/v21.0/me', {
+      params: { fields: 'user_id,username', access_token: token },
+      responseType: 'text',
+      transformResponse: (d) => d,
+    });
+    const meRaw = String(meRes.data);
+    const igUserId = extractId(meRaw, 'user_id') || extractId(meRaw, 'id');
+    const username = extractString(meRaw, 'username');
+    if (!igUserId) throw new Error('Could not determine the Instagram account id.');
 
-    // Save to session/database (for now, store in cookie)
+    // 4. Persist the token server-side; the browser only gets a signed session cookie.
+    await upsertUser(igUserId, username, token, expiresAt);
+
+    // Someone who signed in with LinkedIn first keeps their LinkedIn login and queue.
+    const previous = await getSessionUserId();
+    if (previous) await mergeUserInto(previous, igUserId);
+
     const response = NextResponse.redirect(new URL('/dashboard', request.url));
-
-    response.cookies.set('meta_access_token', access_token, {
+    response.cookies.set(SESSION_COOKIE, createSessionValue(igUserId), {
       httpOnly: true,
-      maxAge: 60 * 60 * 24 * 30, // 30 days
+      secure: true,
+      sameSite: 'lax',
+      path: '/',
+      maxAge: SESSION_MAX_AGE,
     });
-
-    response.cookies.set('instagram_user_id', user_id, {
-      maxAge: 60 * 60 * 24 * 30,
+    response.cookies.set(USERNAME_COOKIE, username ?? '', {
+      path: '/',
+      maxAge: SESSION_MAX_AGE,
     });
-
-    response.cookies.set('instagram_username', userResponse.data.username, {
-      maxAge: 60 * 60 * 24 * 30,
-    });
-
     return response;
-  } catch (error: any) {
-    console.error('OAuth error:', error.response?.data || error.message);
+  } catch (error) {
+    const e = error as { response?: { data?: unknown }; message?: string };
+    console.error('OAuth error:', e.response?.data || e.message);
     return NextResponse.json(
-      { error: 'Authentication failed' },
+      { error: 'Authentication failed', detail: e.message },
       { status: 500 }
     );
   }

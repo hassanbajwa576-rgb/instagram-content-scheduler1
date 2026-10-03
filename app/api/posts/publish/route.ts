@@ -1,70 +1,52 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { cookies } from 'next/headers';
-import axios from 'axios';
+import { claimPost, getUser, markFailed, markPosted } from '@/lib/db';
+import { publishToInstagram } from '@/lib/instagram';
+import { crossPostToLinkedin } from '@/lib/linkedin';
+import { getSessionUserId } from '@/lib/session';
 
+export const dynamic = 'force-dynamic';
+export const maxDuration = 120;
+
+/** POST /api/posts/publish { id }: publish one scheduled post right now. */
 export async function POST(request: NextRequest) {
+  const userId = await getSessionUserId();
+  if (!userId) return NextResponse.json({ error: 'Not authenticated' }, { status: 401 });
+
+  const { id } = await request.json().catch(() => ({ id: NaN }));
+  const postId = Number(id);
+  if (!Number.isInteger(postId)) {
+    return NextResponse.json({ error: 'A post id is required' }, { status: 400 });
+  }
+
   try {
-    const cookieStore = await cookies();
-    const accessToken = cookieStore.get('meta_access_token')?.value;
-    const userId = cookieStore.get('instagram_user_id')?.value;
+    const user = await getUser(userId);
+    if (!user) return NextResponse.json({ error: 'Account not found. Log in again.' }, { status: 401 });
+    if (!user.access_token) {
+      return NextResponse.json({ error: 'Connect Instagram first.' }, { status: 400 });
+    }
 
-    if (!accessToken || !userId) {
+    const post = await claimPost(postId, userId);
+    if (!post) {
       return NextResponse.json(
-        { error: 'Not authenticated' },
-        { status: 401 }
+        { error: 'Post not found, or it is already published/publishing' },
+        { status: 404 }
       );
     }
 
-    const body = await request.json();
-    const { caption, imageUrl, videoUrl, hashtags } = body;
-
-    if (!caption) {
-      return NextResponse.json(
-        { error: 'Caption is required' },
-        { status: 400 }
-      );
+    try {
+      const metaPostId = await publishToInstagram(post, userId, user.access_token);
+      await markPosted(post.id, metaPostId);
+      await crossPostToLinkedin(post, userId);
+      return NextResponse.json({ success: true, postId: metaPostId, linkedin: post.post_to_linkedin });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to publish post';
+      await markFailed(post.id, message);
+      return NextResponse.json({ error: message }, { status: 502 });
     }
-
-    const fullCaption = hashtags ? `${caption}\n\n${hashtags}` : caption;
-
-    // Create container for image/video
-    const containerData: any = {
-      caption: fullCaption,
-      access_token: accessToken,
-    };
-
-    if (imageUrl) {
-      containerData.image_url = imageUrl;
-    } else if (videoUrl) {
-      containerData.video_url = videoUrl;
-      containerData.media_type = 'VIDEO';
-    }
-
-    const containerResponse = await axios.post(
-      `https://graph.instagram.com/v18.0/${userId}/media`,
-      containerData
-    );
-
-    const containerId = containerResponse.data.id;
-
-    // Publish the container
-    const publishResponse = await axios.post(
-      `https://graph.instagram.com/v18.0/${userId}/media_publish`,
-      {
-        creation_id: containerId,
-        access_token: accessToken,
-      }
-    );
-
-    return NextResponse.json({
-      success: true,
-      message: 'Post published successfully',
-      postId: publishResponse.data.id,
-    });
-  } catch (error: any) {
-    console.error('Publish error:', error.response?.data || error.message);
+  } catch (error) {
+    console.error('Publish error:', error);
     return NextResponse.json(
-      { error: error.response?.data?.error?.message || 'Failed to publish post' },
+      { error: error instanceof Error ? error.message : 'Failed to publish post' },
       { status: 500 }
     );
   }

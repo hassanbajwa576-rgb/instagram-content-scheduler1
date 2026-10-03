@@ -1,119 +1,158 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useCallback, useEffect, useState } from 'react';
+import Link from 'next/link';
 import { useRouter } from 'next/navigation';
+import { PostComposer, PostQueue, type QueuePost } from '@/components/PostForms';
 
-interface ScheduledPost {
-  caption: string;
-  imageUrl?: string;
-  videoUrl?: string;
-  hashtags?: string;
-  scheduledTime: string;
-  status: string;
+interface Me {
+  name: string | null;
+  instagramUsername: string | null;
+  hasInstagram: boolean;
+  hasLinkedin: boolean;
 }
 
 export default function Dashboard() {
   const router = useRouter();
-  const [username, setUsername] = useState('');
-  const [posts, setPosts] = useState<ScheduledPost[]>([]);
-  const [loading, setLoading] = useState(false);
+  const [me, setMe] = useState<Me | null>(null);
+  const [posts, setPosts] = useState<QueuePost[]>([]);
+  const [busyId, setBusyId] = useState<number | null>(null);
   const [error, setError] = useState('');
+  const [notice, setNotice] = useState('');
+
+  const loadPosts = useCallback(async () => {
+    const res = await fetch('/api/posts', { cache: 'no-store' });
+    if (res.status === 401) {
+      router.push('/');
+      return;
+    }
+    const data = await res.json();
+    if (!res.ok) {
+      setError(data.error || 'Could not load posts');
+      return;
+    }
+    setPosts(data.posts);
+  }, [router]);
 
   useEffect(() => {
-    // Get username from cookie (in production, fetch from database)
-    const username = localStorage.getItem('instagram_username');
-    if (username) {
-      setUsername(username);
-    }
-  }, []);
+    const init = async () => {
+      try {
+        const res = await fetch('/api/me', { cache: 'no-store' });
+        if (res.status === 401) {
+          router.push('/');
+          return;
+        }
+        if (res.ok) setMe(await res.json());
+        await loadPosts();
+      } catch {
+        setError('Could not load posts');
+      }
+    };
+    void init();
+  }, [loadPosts, router]);
 
-  const handleLogout = () => {
-    localStorage.removeItem('instagram_username');
-    router.push('/');
-  };
+  async function publishNow(id: number) {
+    setError('');
+    setNotice('');
+    setBusyId(id);
+    try {
+      const res = await fetch('/api/posts/publish', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id }),
+      });
+      const data = await res.json();
+      if (!res.ok) setError(data.error || 'Failed to publish');
+      else setNotice('Published to Instagram');
+    } catch {
+      setError('Network error while publishing');
+    } finally {
+      setBusyId(null);
+      await loadPosts();
+    }
+  }
+
+  async function removePost(id: number) {
+    setError('');
+    setBusyId(id);
+    try {
+      const res = await fetch(`/api/posts?id=${id}`, { method: 'DELETE' });
+      const data = await res.json();
+      if (!res.ok) setError(data.error || 'Failed to delete');
+    } finally {
+      setBusyId(null);
+      await loadPosts();
+    }
+  }
 
   return (
-    <div className="min-h-screen bg-gray-50">
-      {/* Header */}
+    <div className="min-h-screen bg-gray-50 text-gray-900">
       <header className="bg-white shadow">
-        <div className="max-w-7xl mx-auto px-4 py-6 flex justify-between items-center">
-          <h1 className="text-3xl font-bold text-gray-900">Instagram Content Scheduler</h1>
-          <div className="flex items-center gap-4">
-            {username && <span className="text-gray-600">@{username}</span>}
-            <button
-              onClick={handleLogout}
-              className="bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded"
-            >
+        <div className="max-w-7xl mx-auto px-4 py-6 flex flex-wrap gap-3 justify-between items-center">
+          <div>
+            <Link href="/" className="text-xs font-semibold tracking-wide text-purple-700 uppercase">
+              Universal Scheduler
+            </Link>
+            <h1 className="text-2xl sm:text-3xl font-bold text-gray-900">Instagram</h1>
+          </div>
+          <div className="flex items-center gap-3">
+            {me?.instagramUsername && <span className="text-gray-600">@{me.instagramUsername}</span>}
+            <a href="/linkedin" className="bg-blue-700 hover:bg-blue-800 text-white px-4 py-2 rounded">
+              LinkedIn
+            </a>
+            <a href="/api/auth/logout" className="bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded">
               Logout
-            </button>
+            </a>
           </div>
         </div>
       </header>
 
-      {/* Main Content */}
       <main className="max-w-7xl mx-auto px-4 py-8">
+        {error && (
+          <p className="mb-4 text-sm text-red-700 bg-red-50 border border-red-200 rounded p-3">{error}</p>
+        )}
+        {notice && (
+          <p className="mb-4 text-sm text-green-800 bg-green-50 border border-green-200 rounded p-3">{notice}</p>
+        )}
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-          {/* Left: Create Posts */}
           <div className="lg:col-span-2">
-            <div className="bg-white rounded-lg shadow p-6">
-              <h2 className="text-2xl font-bold mb-6">Give Claude a Prompt</h2>
-
-              <div className="space-y-4 mb-6 p-4 bg-blue-50 rounded-lg border border-blue-200">
-                <p className="text-sm text-gray-700">
-                  <strong>Example:</strong> "Create 5 Instagram posts about fitness tips with motivational quotes,
-                  using royalty-free workout videos from Pexels. Schedule them every 30 minutes starting now."
+            {me && !me.hasInstagram ? (
+              <div className="bg-white rounded-lg shadow p-8 text-center">
+                <h2 className="text-2xl font-bold mb-2">Connect your Instagram account</h2>
+                <p className="text-gray-600 mb-6">
+                  You signed in with LinkedIn{me.name ? `, ${me.name}` : ''}. Add your Instagram professional
+                  account to schedule photos and Reels too. Your LinkedIn queue stays exactly as it is.
                 </p>
+                <a
+                  href="/api/auth/login"
+                  className="inline-block bg-purple-600 hover:bg-purple-700 text-white px-6 py-3 rounded-lg font-semibold"
+                >
+                  Connect Instagram
+                </a>
               </div>
-
-              <textarea
-                placeholder="Give Claude a prompt to generate and schedule posts..."
-                className="w-full h-40 p-4 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+            ) : (
+              <PostComposer
+                platform="instagram"
+                endpoint="/api/posts"
+                mediaRequired
+                onScheduled={async (message) => {
+                  setError('');
+                  setNotice(message);
+                  await loadPosts();
+                }}
               />
-
-              <div className="mt-4 p-4 bg-gray-50 rounded-lg">
-                <p className="text-sm text-gray-600 mb-3">
-                  <strong>How it works:</strong>
-                </p>
-                <ol className="list-decimal list-inside space-y-2 text-sm text-gray-600">
-                  <li>Give Claude a prompt describing the posts you want</li>
-                  <li>Claude generates captions and finds royalty-free media from Pixabay/Pexels</li>
-                  <li>Claude uploads the posts to this app</li>
-                  <li>Posts auto-publish to your Instagram at your specified intervals</li>
-                </ol>
-              </div>
-
-              <button className="w-full mt-6 bg-blue-600 hover:bg-blue-700 text-white py-3 rounded-lg font-semibold">
-                Generate & Schedule Posts
-              </button>
-            </div>
+            )}
           </div>
-
-          {/* Right: Scheduled Posts Preview */}
           <div>
-            <div className="bg-white rounded-lg shadow p-6">
-              <h2 className="text-xl font-bold mb-4">Scheduled Posts</h2>
-              {posts.length === 0 ? (
-                <p className="text-gray-500 text-center py-8">No posts scheduled yet</p>
-              ) : (
-                <div className="space-y-4">
-                  {posts.map((post, idx) => (
-                    <div key={idx} className="border rounded-lg p-3 text-sm">
-                      <p className="text-gray-700 truncate">{post.caption}</p>
-                      <p className="text-xs text-gray-500 mt-2">
-                        {new Date(post.scheduledTime).toLocaleString()}
-                      </p>
-                      <span className={`mt-2 inline-block text-xs px-2 py-1 rounded ${
-                        post.status === 'pending' ? 'bg-yellow-100 text-yellow-800' :
-                        post.status === 'posted' ? 'bg-green-100 text-green-800' :
-                        'bg-red-100 text-red-800'
-                      }`}>
-                        {post.status}
-                      </span>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
+            <PostQueue
+              title="Scheduled Posts"
+              posts={posts}
+              busyId={busyId}
+              mediaLabel={(p) => (p.video_url ? 'Reel' : 'Photo')}
+              onRefresh={() => void loadPosts()}
+              onPublish={publishNow}
+              onDelete={removePost}
+            />
           </div>
         </div>
       </main>

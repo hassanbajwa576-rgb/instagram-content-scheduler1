@@ -1,0 +1,41 @@
+name: Publish due posts
+
+# Calls the app's publish endpoint every 5 minutes so scheduled Instagram and
+# LinkedIn posts go out on time. Vercel's free Hobby plan only allows daily cron
+# jobs, so the schedule lives here instead of in vercel.json.
+#
+# Setup (one time): in this repo go to Settings > Secrets and variables > Actions
+# and add a secret named CRON_SECRET with the SAME value as the CRON_SECRET
+# environment variable in the Vercel project. Optionally add a repository
+# variable APP_URL if the app is served from a different address.
+
+on:
+  schedule:
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: publish-cron
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - name: Call /api/cron/publish
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          APP_URL: ${{ vars.APP_URL || 'https://universalscheduler.vercel.app' }}
+        run: |
+          if [ -z "$CRON_SECRET" ]; then
+            echo "CRON_SECRET secret is not set in this repository." >&2
+            exit 1
+          fi
+          code=$(curl -sS -m 300 -o response.json -w '%{http_code}' \
+            -H "Authorization: Bearer $CRON_SECRET" \
+            "$APP_URL/api/cron/publish")
+          cat response.json; echo
+          test "$code" = "200"

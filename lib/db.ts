@@ -218,7 +218,13 @@ export async function insertPosts(
 export async function listPosts(instagramUserId: string): Promise<PostRow[]> {
   await ensureSchema();
   const { rows } = await getPool().query<PostRow>(
-    'SELECT * FROM ig_posts WHERE instagram_user_id = $1 ORDER BY scheduled_time ASC, id ASC LIMIT 200',
+    `SELECT * FROM (
+       (SELECT * FROM ig_posts WHERE instagram_user_id = $1 AND status IN ('pending', 'publishing')
+         ORDER BY scheduled_time ASC, id ASC LIMIT 500)
+       UNION ALL
+       (SELECT * FROM ig_posts WHERE instagram_user_id = $1 AND status NOT IN ('pending', 'publishing')
+         ORDER BY scheduled_time DESC, id DESC LIMIT 50)
+     ) q ORDER BY scheduled_time ASC, id ASC`,
     [instagramUserId]
   );
   return rows;
@@ -374,7 +380,13 @@ export async function insertLinkedinPosts(
 export async function listLinkedinPosts(userId: string): Promise<LinkedinPostRow[]> {
   await ensureSchema();
   const { rows } = await getPool().query<LinkedinPostRow>(
-    'SELECT * FROM li_posts WHERE instagram_user_id = $1 ORDER BY scheduled_time ASC, id ASC LIMIT 200',
+    `SELECT * FROM (
+       (SELECT * FROM li_posts WHERE instagram_user_id = $1 AND status IN ('pending', 'publishing')
+         ORDER BY scheduled_time ASC, id ASC LIMIT 500)
+       UNION ALL
+       (SELECT * FROM li_posts WHERE instagram_user_id = $1 AND status NOT IN ('pending', 'publishing')
+         ORDER BY scheduled_time DESC, id DESC LIMIT 50)
+     ) q ORDER BY scheduled_time ASC, id ASC`,
     [userId]
   );
   return rows;

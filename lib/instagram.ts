@@ -10,12 +10,15 @@ function graphError(err: unknown): string {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+type MediaPost = Pick<PostRow, 'caption' | 'image_url' | 'video_url' | 'hashtags'>;
+
 /**
- * Publishes one post to Instagram. Images are published as photo posts and
- * videos as Reels. Returns the published media id, or throws with a readable message.
+ * Step 1 of publishing: asks Instagram to fetch and process the media. Videos become Reels and
+ * can take minutes to process, so this returns the container id straight away and the caller
+ * decides how long to wait (see lib/publish.ts). Throws with a readable message on failure.
  */
-export async function publishToInstagram(
-  post: Pick<PostRow, 'caption' | 'image_url' | 'video_url' | 'hashtags'>,
+export async function createMediaContainer(
+  post: MediaPost,
   instagramUserId: string,
   accessToken: string
 ): Promise<string> {
@@ -35,28 +38,73 @@ export async function publishToInstagram(
 
   try {
     const container = await axios.post(`${GRAPH}/${instagramUserId}/media`, new URLSearchParams(params));
-    const containerId: string = container.data.id;
+    return String(container.data.id);
+  } catch (err) {
+    throw new Error(graphError(err));
+  }
+}
 
-    // Videos are processed asynchronously; wait until the container is ready.
-    if (post.video_url) {
-      let ready = false;
-      for (let i = 0; i < 20; i++) {
-        await sleep(3000);
-        const status = await axios.get(`${GRAPH}/${containerId}`, {
-          params: { fields: 'status_code', access_token: accessToken },
-        });
-        const code = status.data.status_code;
-        if (code === 'FINISHED') {
-          ready = true;
-          break;
-        }
-        if (code === 'ERROR' || code === 'EXPIRED') {
-          throw new Error(`Instagram could not process the video (status ${code}).`);
-        }
-      }
-      if (!ready) throw new Error('Timed out waiting for Instagram to process the video.');
+export interface ContainerStatus {
+  /** IN_PROGRESS, FINISHED, ERROR, EXPIRED or PUBLISHED. */
+  code: string;
+  /** Instagram's own explanation when processing fails, if it gave one. */
+  detail: string | null;
+}
+
+export async function getContainerStatus(containerId: string, accessToken: string): Promise<ContainerStatus> {
+  try {
+    const res = await axios.get(`${GRAPH}/${containerId}`, {
+      params: { fields: 'status_code,status', access_token: accessToken },
+    });
+    return {
+      code: String(res.data.status_code ?? 'IN_PROGRESS'),
+      detail: typeof res.data.status === 'string' ? res.data.status : null,
+    };
+  } catch (err) {
+    const e = err as { response?: { status?: number } };
+    const transient = !e.response || (e.response.status ?? 0) >= 500 || e.response.status === 429;
+    throw Object.assign(new Error(graphError(err)), { transient });
+  }
+}
+
+/** True for errors worth trying again later (network trouble, Instagram 5xx, rate limits). */
+export function isTransientError(err: unknown): boolean {
+  return (err as { transient?: boolean }).transient === true;
+}
+
+export function processingFailedMessage(status: ContainerStatus): string {
+  const reason = status.code === 'EXPIRED' ? 'the upload expired' : status.detail || status.code;
+  return `Instagram could not process the video (${reason}).`;
+}
+
+/**
+ * Polls until Instagram has finished processing, up to maxWaitMs. Returns true when ready and
+ * false when it is still processing. Throws if Instagram rejects the media.
+ */
+export async function waitForContainer(
+  containerId: string,
+  accessToken: string,
+  maxWaitMs: number
+): Promise<boolean> {
+  const deadline = Date.now() + maxWaitMs;
+  for (;;) {
+    await sleep(4000);
+    const status = await getContainerStatus(containerId, accessToken);
+    if (status.code === 'FINISHED') return true;
+    if (status.code === 'ERROR' || status.code === 'EXPIRED') {
+      throw new Error(processingFailedMessage(status));
     }
+    if (Date.now() + 4000 > deadline) return false;
+  }
+}
 
+/** Step 2 of publishing: makes a finished container live. Returns the Instagram media id. */
+export async function publishContainer(
+  containerId: string,
+  instagramUserId: string,
+  accessToken: string
+): Promise<string> {
+  try {
     const published = await axios.post(
       `${GRAPH}/${instagramUserId}/media_publish`,
       new URLSearchParams({ creation_id: containerId, access_token: accessToken })

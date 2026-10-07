@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { claimPost, getUser, markFailed, markPosted } from '@/lib/db';
-import { publishToInstagram } from '@/lib/instagram';
-import { crossPostToLinkedin } from '@/lib/linkedin';
+import { claimPost, getUser, markFailed } from '@/lib/db';
+import { startPost } from '@/lib/publish';
 import { getSessionUserId } from '@/lib/session';
 
 export const dynamic = 'force-dynamic';
@@ -34,10 +33,19 @@ export async function POST(request: NextRequest) {
     }
 
     try {
-      const metaPostId = await publishToInstagram(post, userId, user.access_token);
-      await markPosted(post.id, metaPostId);
-      await crossPostToLinkedin(post, userId);
-      return NextResponse.json({ success: true, postId: metaPostId, linkedin: post.post_to_linkedin });
+      // Wait up to 85s for Instagram to process a video; longer ones are finished by the cron job.
+      const outcome = await startPost(post, userId, user.access_token, 85_000);
+      if (outcome.state === 'processing') {
+        return NextResponse.json(
+          {
+            success: true,
+            processing: true,
+            message: 'Instagram is still processing the video. It will be published automatically within a few minutes.',
+          },
+          { status: 202 }
+        );
+      }
+      return NextResponse.json({ success: true, postId: outcome.metaPostId, linkedin: post.post_to_linkedin });
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to publish post';
       await markFailed(post.id, message);

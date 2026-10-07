@@ -63,7 +63,7 @@ export default function Dashboard() {
       });
       const data = await res.json();
       if (!res.ok) setError(data.error || 'Failed to publish');
-      else setNotice('Published to Instagram');
+      else setNotice(data.processing ? data.message : 'Published to Instagram');
     } catch {
       setError('Network error while publishing');
     } finally {

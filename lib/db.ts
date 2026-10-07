@@ -23,6 +23,9 @@ export interface PostRow {
   post_to_linkedin: boolean;
   linkedin_post_id: string | null;
   linkedin_error: string | null;
+  /** Instagram media container while a video is still being processed. */
+  ig_container_id: string | null;
+  ig_container_at: Date | null;
 }
 
 export interface LinkedinPostRow {
@@ -110,6 +113,8 @@ CREATE INDEX IF NOT EXISTS idx_ig_posts_due ON ig_posts(status, scheduled_time);
 ALTER TABLE ig_posts ADD COLUMN IF NOT EXISTS post_to_linkedin BOOLEAN NOT NULL DEFAULT false;
 ALTER TABLE ig_posts ADD COLUMN IF NOT EXISTS linkedin_post_id TEXT;
 ALTER TABLE ig_posts ADD COLUMN IF NOT EXISTS linkedin_error TEXT;
+ALTER TABLE ig_posts ADD COLUMN IF NOT EXISTS ig_container_id TEXT;
+ALTER TABLE ig_posts ADD COLUMN IF NOT EXISTS ig_container_at TIMESTAMPTZ;
 
 CREATE TABLE IF NOT EXISTS li_accounts (
   instagram_user_id TEXT PRIMARY KEY REFERENCES ig_users(instagram_user_id) ON DELETE CASCADE,
@@ -273,7 +278,7 @@ export async function claimDuePosts(limit: number): Promise<PostRow[]> {
 export async function claimPost(id: number, instagramUserId: string): Promise<PostRow | null> {
   await ensureSchema();
   const { rows } = await getPool().query<PostRow>(
-    `UPDATE ig_posts SET status = 'publishing', updated_at = now()
+    `UPDATE ig_posts SET status = 'publishing', ig_container_id = NULL, ig_container_at = NULL, updated_at = now()
      WHERE id = $1 AND instagram_user_id = $2 AND status IN ('pending', 'failed')
      RETURNING *`,
     [id, instagramUserId]
@@ -290,18 +295,65 @@ export async function markPosted(id: number, metaPostId: string): Promise<void> 
 
 export async function markFailed(id: number, message: string): Promise<void> {
   await getPool().query(
-    `UPDATE ig_posts SET status = 'failed', error_message = $2, updated_at = now() WHERE id = $1`,
+    `UPDATE ig_posts SET status = 'failed', error_message = $2, updated_at = now() WHERE id = $1 AND status <> 'posted'`,
     [id, message.slice(0, 1000)]
   );
 }
 
-/** Posts stuck in 'publishing' (e.g. a function timed out) go back to pending after 15 minutes. */
+/**
+ * Posts stuck in 'publishing' because the function died before Instagram was contacted go back to
+ * pending after 15 minutes. Posts that already have an Instagram container are left alone: they are
+ * waiting for Instagram to finish processing and are picked up by claimProcessingPosts.
+ */
 export async function releaseStuckPosts(): Promise<void> {
   await ensureSchema();
   await getPool().query(
     `UPDATE ig_posts SET status = 'pending', updated_at = now()
-     WHERE status = 'publishing' AND updated_at < now() - interval '15 minutes'`
+     WHERE status = 'publishing' AND ig_container_id IS NULL AND updated_at < now() - interval '15 minutes'`
   );
+}
+
+/** Remembers the Instagram container so a video that is still processing can be finished later. */
+export async function saveContainer(id: number, containerId: string): Promise<void> {
+  await getPool().query(
+    `UPDATE ig_posts SET ig_container_id = $2, ig_container_at = now(), updated_at = now() WHERE id = $1`,
+    [id, containerId]
+  );
+}
+
+/** Videos Instagram has had for more than an hour without finishing are given up on. */
+export async function failStaleContainers(): Promise<number> {
+  await ensureSchema();
+  const res = await getPool().query(
+    `UPDATE ig_posts
+     SET status = 'failed', error_message = 'Instagram did not finish processing the video within an hour. Try a shorter or smaller video.', updated_at = now()
+     WHERE status = 'publishing' AND ig_container_id IS NOT NULL AND ig_container_at < now() - interval '60 minutes'`
+  );
+  return res.rowCount ?? 0;
+}
+
+/**
+ * Atomically claims posts whose video is still being processed by Instagram so they can be checked
+ * (and published once ready). Posts are only picked up after two minutes, so a "Publish now" that is
+ * still waiting is never raced, and each claim hides the post from other runs for a minute.
+ */
+export async function claimProcessingPosts(limit: number): Promise<PostRow[]> {
+  await ensureSchema();
+  const { rows } = await getPool().query<PostRow>(
+    `UPDATE ig_posts SET updated_at = now()
+     WHERE id IN (
+       SELECT id FROM ig_posts
+       WHERE status = 'publishing' AND ig_container_id IS NOT NULL
+         AND ig_container_at < now() - interval '2 minutes'
+         AND updated_at < now() - interval '1 minute'
+       ORDER BY ig_container_at ASC
+       LIMIT $1
+       FOR UPDATE SKIP LOCKED
+     )
+     RETURNING *`,
+    [limit]
+  );
+  return rows;
 }
 
 export async function upsertLinkedinAccount(

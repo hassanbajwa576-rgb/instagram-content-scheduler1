@@ -21,8 +21,10 @@ export const dynamic = 'force-dynamic';
 export const maxDuration = 300;
 
 const BATCH = 5;
-// How long to wait for Instagram to process a video before leaving it for the next run (5 posts x 30s fits in maxDuration).
-const VIDEO_WAIT_MS = 30_000;
+// External cron services (e.g. cron-job.org) give up on a request after about 30 seconds, so the whole run
+// stays under ~25s. Videos are handed to Instagram and, if it needs longer, finished on a later run.
+const RUN_BUDGET_MS = 25_000;
+const MAX_VIDEO_WAIT_MS = 12_000;
 const REFRESH_WINDOW_MS = 10 * 24 * 60 * 60 * 1000; // refresh tokens expiring within 10 days
 
 /**
@@ -30,6 +32,7 @@ const REFRESH_WINDOW_MS = 10 * 24 * 60 * 60 * 1000; // refresh tokens expiring w
  * Vercel sends `Authorization: Bearer $CRON_SECRET` automatically once CRON_SECRET is set.
  */
 export async function GET(request: NextRequest) {
+  const startedAt = Date.now();
   const secret = process.env.CRON_SECRET;
   if (!secret || request.headers.get('Authorization') !== `Bearer ${secret}`) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
@@ -79,7 +82,9 @@ export async function GET(request: NextRequest) {
     for (const post of due) {
       try {
         const token = await tokenFor(post);
-        const outcome = await startPost(post, post.instagram_user_id, token, VIDEO_WAIT_MS);
+        // Spend only what is left of the run budget (keeping ~6s spare for publishing and LinkedIn).
+        const waitMs = Math.min(MAX_VIDEO_WAIT_MS, RUN_BUDGET_MS - (Date.now() - startedAt) - 6_000);
+        const outcome = await startPost(post, post.instagram_user_id, token, waitMs);
         results.push(
           outcome.state === 'posted'
             ? { id: post.id, status: 'posted', detail: outcome.metaPostId }

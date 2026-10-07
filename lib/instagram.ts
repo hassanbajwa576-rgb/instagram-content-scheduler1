@@ -86,6 +86,7 @@ export async function waitForContainer(
   accessToken: string,
   maxWaitMs: number
 ): Promise<boolean> {
+  if (maxWaitMs < 5000) return false; // not enough time for even one check: leave it for the next run
   const deadline = Date.now() + maxWaitMs;
   for (;;) {
     await sleep(4000);

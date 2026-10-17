@@ -10,8 +10,8 @@ name: Publish due posts
 # variable APP_URL if the app is served from a different address.
 
 on:
-  schedule:
-    - cron: '*/20 * * * *'
+  # The automatic schedule is disabled: publishing is triggered by an external
+  # cron job (cron-job.org) instead. Run this workflow manually if needed.
   workflow_dispatch:
 
 permissions: {}

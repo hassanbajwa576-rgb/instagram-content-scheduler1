@@ -1,6 +1,6 @@
 name: Publish due posts
 
-# Calls the app's publish endpoint every 5 minutes so scheduled Instagram and
+# Calls the app's publish endpoint every 20 minutes so scheduled Instagram and
 # LinkedIn posts go out on time. Vercel's free Hobby plan only allows daily cron
 # jobs, so the schedule lives here instead of in vercel.json.
 #
@@ -11,7 +11,7 @@ name: Publish due posts
 
 on:
   schedule:
-    - cron: '*/5 * * * *'
+    - cron: '*/20 * * * *'
   workflow_dispatch:
 
 permissions: {}
